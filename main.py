@@ -7,11 +7,11 @@ from datetime import datetime
 from dotenv import load_dotenv
 import os
 
+PORT = int(os.getenv("PORT", 8501))
 # Load environment variables
-if os.path.exists(".env"):
-    load_dotenv()
+load_dotenv()
 
-# Use environment variables (works both locally and on Vercel)
+# MySQL Configuration
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
@@ -230,3 +230,5 @@ if st.session_state["logged_in"]:
         st.session_state["username"] = None
         st.session_state["show_history"] = False
         st.experimental_rerun()
+if __name__ == "__main__":
+    st.run(port=PORT)
