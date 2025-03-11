@@ -8,7 +8,7 @@ from datetime import datetime
 # MySQL Configuration
 MYSQL_HOST = "localhost"
 MYSQL_USER = "root"
-MYSQL_PASSWORD = "nyfa@27octP"
+MYSQL_PASSWORD = "your_password"
 MYSQL_DB = "wikipedia_app"
 
 
