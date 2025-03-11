@@ -8,9 +8,10 @@ from dotenv import load_dotenv
 import os
 
 # Load environment variables
-load_dotenv()
+if os.path.exists(".env"):
+    load_dotenv()
 
-# MySQL Configuration
+# Use environment variables (works both locally and on Vercel)
 MYSQL_HOST = os.getenv("MYSQL_HOST")
 MYSQL_USER = os.getenv("MYSQL_USER")
 MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
