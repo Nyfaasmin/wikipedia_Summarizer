@@ -92,9 +92,6 @@ streamlit run app.py
 ## 🤝 Contributing
 Feel free to fork this repo and submit pull requests! 🚀
 
-## 📜 License
-This project is licensed under the **MIT License**.
-
 ## 🛠 Author
 **Pathan Nyfa Asmin** - B.Tech CSE - Shri Vishnu Engineering College for Women
 
