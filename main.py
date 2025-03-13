@@ -1,73 +1,51 @@
 import streamlit as st
 import wikipedia
 import pyttsx3
-import pymysql
+import pymongo
 import re
+import threading
+import os
 from datetime import datetime
 from dotenv import load_dotenv
-import os
 
-PORT = int(os.getenv("PORT", 8501))
 # Load environment variables
 load_dotenv()
 
-# MySQL Configuration
-MYSQL_HOST = os.getenv("MYSQL_HOST")
-MYSQL_USER = os.getenv("MYSQL_USER")
-MYSQL_PASSWORD = os.getenv("MYSQL_PASSWORD")
-MYSQL_DB = os.getenv("MYSQL_DB")
+# MongoDB Configuration
+MONGO_URI = os.getenv("MONGO_URI")
+MONGO_DB = os.getenv("MONGO_DB")
 
+# Connect to MongoDB
+client = pymongo.MongoClient(MONGO_URI)
+db = client[MONGO_DB]
+users_collection = db["users"]
+history_collection = db["history"]
 
+# Initialize session state
+if "logged_in" not in st.session_state:
+    st.session_state.update({"logged_in": False, "username": None, "show_history": False, "summary": ""})
 
-# Connect to MySQL
-def get_db_connection():
-    return pymysql.connect(host=MYSQL_HOST, user=MYSQL_USER, password=MYSQL_PASSWORD, database=MYSQL_DB)
+# Initialize pyttsx3 engine globally
+engine = pyttsx3.init()
+engine.setProperty('rate', 150)
 
-# Function to check if username exists
 def check_user(username, password):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT * FROM users WHERE username = %s AND password = %s", (username, password))
-    user = cursor.fetchone()
-    conn.close()
-    return user
+    return users_collection.find_one({"username": username, "password": password})
 
-# Function to register a new user
 def register_user(username, password):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("INSERT INTO users (username, password) VALUES (%s, %s)", (username, password))
-    conn.commit()
-    conn.close()
+    users_collection.insert_one({"username": username, "password": password})
 
-# Store search history
 def save_search_history(username, title, summary, lang):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-    cursor.execute("INSERT INTO history (username, title, summary, lang, timestamp) VALUES (%s, %s, %s, %s, %s)",
-                   (username, title, summary, lang, timestamp))
-    conn.commit()
-    conn.close()
+    history_collection.insert_one({
+        "username": username, "title": title, "summary": summary, "lang": lang, "timestamp": datetime.now()
+    })
 
-# Retrieve search history
 def get_search_history(username):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("SELECT title, summary, lang, timestamp FROM history WHERE username = %s ORDER BY timestamp DESC", (username,))
-    history = cursor.fetchall()
-    conn.close()
-    return history
+    return list(history_collection.find({"username": username}).sort("timestamp", -1))
 
-# Clear search history
 def clear_history(username):
-    conn = get_db_connection()
-    cursor = conn.cursor()
-    cursor.execute("DELETE FROM history WHERE username = %s", (username,))
-    conn.commit()
-    conn.close()
+    history_collection.delete_many({"username": username})
 
-# Wikipedia Summary with Approximate Word Limit
 def get_wikipedia_summary(title, word_limit, lang):
     try:
         wikipedia.set_lang(lang)
@@ -79,8 +57,7 @@ def get_wikipedia_summary(title, word_limit, lang):
 
         approx_text = " ".join(words[:word_limit + 20])
         sentences = re.findall(r'[^.?!]+[.?!]', approx_text)
-        final_summary = ""
-        word_count = 0
+        final_summary, word_count = "", 0
 
         for sentence in sentences:
             word_count += len(sentence.split())
@@ -89,7 +66,6 @@ def get_wikipedia_summary(title, word_limit, lang):
             final_summary += sentence + " "
 
         return final_summary.strip()
-
     except wikipedia.exceptions.DisambiguationError as e:
         return f"Disambiguation Error! Choose a more specific title: {', '.join(e.options)}"
     except wikipedia.exceptions.PageError:
@@ -99,136 +75,92 @@ def get_wikipedia_summary(title, word_limit, lang):
     except Exception as e:
         return f"An error occurred: {e}"
 
-# Text-to-Speech Function
-def speak_text(text):
-    engine = pyttsx3.init()
-    engine.setProperty('rate', 150)
-    engine.say(text)
-    engine.runAndWait()
+def speak_text_pyttsx3(text):
+    global engine
+    engine.stop()  # Stop previous speech
+    def run_speech():
+        engine.say(text)
+        engine.runAndWait()
+    threading.Thread(target=run_speech, daemon=True).start()
+
+def stop_speech():
+    global engine
+    engine.stop()
 
 # Streamlit UI
 st.title("📚 Wikipedia Summarizer")
 
-# Initialize session state for login
-if "logged_in" not in st.session_state:
-    st.session_state["logged_in"] = False
-    st.session_state["username"] = None
-    st.session_state["show_history"] = False
-
-# Sidebar for Login/Register options
 st.sidebar.subheader("🔑 Select an Option")
 auth_option = st.sidebar.selectbox("Login or Register", ["Login", "Register"])
 
-# If user is not logged in, show login/register interface
 if not st.session_state["logged_in"]:
     if auth_option == "Login":
         st.subheader("🔑 Login")
-
-        username = st.text_input("Username")
-        password = st.text_input("Password", type="password")
-
+        username, password = st.text_input("Username"), st.text_input("Password", type="password")
         if st.button("Login"):
-            user = check_user(username, password)
-            if user:
-                st.session_state["logged_in"] = True
-                st.session_state["username"] = username
+            if check_user(username, password):
+                st.session_state.update({"logged_in": True, "username": username})
                 st.success(f"Welcome, {username}!")
-                st.experimental_rerun()
+                st.rerun()
             else:
-                st.error("Invalid username or password. Please try again.")
-
-    elif auth_option == "Register":
+                st.error("Invalid credentials. Try again.")
+    else:
         st.subheader("📝 Register")
-
-        new_username = st.text_input("New Username")
-        new_password = st.text_input("New Password", type="password")
+        new_username, new_password = st.text_input("New Username"), st.text_input("New Password", type="password")
         confirm_password = st.text_input("Confirm Password", type="password")
-
         if st.button("Register"):
             if new_password != confirm_password:
-                st.warning("Passwords do not match! Try again.")
+                st.warning("Passwords do not match!")
             elif new_username and new_password:
                 register_user(new_username, new_password)
                 st.success("Registration successful! You can now login.")
             else:
                 st.warning("Please fill in all fields.")
 
-# If user is logged in, show Wikipedia summarizer
 if st.session_state["logged_in"]:
     username = st.session_state["username"]
+    st.subheader(f"Hello, {username}! Start Searching on Wikipedia 📖")
 
-    col1, col2 = st.columns([0.8, 0.2])
+    if st.button("📜 View History"):
+        st.session_state["show_history"] = not st.session_state["show_history"]
+        st.rerun()
 
-    with col1:
-        st.subheader(f"Hello, {username}! Start Searching on Wikipedia 📖")
-
-    with col2:
-        if st.button("📜 View History"):
-            st.session_state["show_history"] = not st.session_state["show_history"]
-            st.experimental_rerun()
-
-    # Show history if button is clicked
     if st.session_state["show_history"]:
         st.subheader("📜 Search History")
         history = get_search_history(username)
-
         if history:
             for entry in history:
-                st.markdown(f"**🔹 {entry[0]} ({entry[2]})** - {entry[3]}")
-                st.write(f"{entry[1][:300]}...")  # Show only first 300 chars
+                st.markdown(f"**🔹 {entry['title']} ({entry['lang']})** - {entry['timestamp']}")
+                st.write(f"{entry['summary'][:300]}...")
                 st.markdown("---")
-
             if st.button("🗑 Clear History"):
                 clear_history(username)
                 st.session_state["show_history"] = False
-                st.experimental_rerun()
+                st.rerun()
         else:
             st.info("No search history found.")
 
-    # Language selection
-    LANGUAGES = {
-        "English": "en",
-        "Telugu": "te",
-        "Hindi": "hi",
-        "Spanish": "es",
-        "French": "fr",
-        "German": "de",
-        "Chinese": "zh",
-        "Russian": "ru",
-    }
-    selected_language = st.selectbox("Choose Language:", list(LANGUAGES.keys()))
-    lang_code = LANGUAGES.get(selected_language, "en")
+    LANGUAGES = {"English": "en", "Telugu": "te", "Hindi": "hi", "Spanish": "es", "French": "fr", "German": "de", "Chinese": "zh", "Russian": "ru"}
+    lang_code = LANGUAGES[st.selectbox("Choose Language:", list(LANGUAGES.keys()))]
 
-
-    if "logged_in" not in st.session_state:
-        st.session_state["logged_in"] = False
-        st.session_state["username"] = None
-        st.session_state["show_history"] = False  # ✅ Ensure show_history is initialized
-
-    # Wikipedia inputs
     page_title = st.text_input("Enter Wikipedia page title:")
     word_limit = st.number_input("Enter number of words:", min_value=10, max_value=500, value=50, step=10)
 
-    if st.button("Get Summary"):
-        if page_title:
-            summary = get_wikipedia_summary(page_title, word_limit, lang_code)
-            st.subheader(f"Summary of '{page_title}' in {selected_language}:")
-            st.write(summary)
+    if st.button("Get Summary") and page_title:
+        st.session_state["summary"] = get_wikipedia_summary(page_title, word_limit, lang_code)
+        save_search_history(username, page_title, st.session_state["summary"], lang_code)
 
-            # Save search history
-            save_search_history(username, page_title, summary, lang_code)
-
-            # Read Aloud Button
+    if st.session_state["summary"]:
+        st.subheader(f"Summary of '{page_title}':")
+        st.write(st.session_state["summary"])
+        col1, col2 = st.columns(2)
+        with col1:
             if st.button("Read Aloud"):
-                speak_text(summary)
-        else:
-            st.warning("Please enter a Wikipedia page title.")
+                speak_text_pyttsx3(st.session_state["summary"])
+        with col2:
+            if st.button("Stop Voice"):
+                stop_speech()
 
-    # Logout Button
     if st.sidebar.button("Logout"):
-        st.session_state["logged_in"] = False
-        st.session_state["username"] = None
-        st.session_state["show_history"] = False
-        st.experimental_rerun()
-if __name__ == "__main__":
-    st.run(port=PORT)
+        st.session_state.update({"logged_in": False, "username": None, "show_history": False, "summary": ""})
+        st.rerun()
